@@ -102,7 +102,6 @@ impl Compiler {
 
             builder.switch_to_block(blocks[i]);
 
-            info!("opcode: {}", (*step).opcode);
             match opcode {
                 pg_sys::ExprEvalOp_EEOP_DONE => {
                     let tmpvalue = builder.ins().load(datum_type, TRUSTED, p_tmpvalue, 0);
@@ -181,11 +180,11 @@ impl Compiler {
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
                 pg_sys::ExprEvalOp_EEOP_FUNCEXPR => {
-                    info!("fn_oid: {}", (*(*step).d.func.finfo).fn_oid.as_u32());
+                    //info!("fn_oid: {}", (*(*step).d.func.finfo).fn_oid.as_u32());
                     all = false;
                 }
                 pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT => {
-                    info!("fn_oid: {}", (*(*step).d.func.finfo).fn_oid.as_u32());
+                    //info!("fn_oid: {}", (*(*step).d.func.finfo).fn_oid.as_u32());
                     all = false;
                 }
                 //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_FUSAGE => (),
