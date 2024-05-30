@@ -9,7 +9,7 @@ use cranelift_module::Module;
 use pgrx::prelude::*;
 use std::cell::OnceCell;
 use std::cell::RefCell;
-use std::ptr::addr_of;
+use std::mem::offset_of;
 
 pgrx::pg_module_magic!();
 
@@ -76,19 +76,26 @@ impl Compiler {
         builder.append_block_params_for_function_params(const_block);
         builder.switch_to_block(const_block);
 
+        let param_state = builder.block_params(const_block)[0];
+        let _param_econtext = builder.block_params(const_block)[1];
         let param_isnull = builder.block_params(const_block)[2];
+        let tmpvalue_off = builder.ins().iconst(ptr_type, offset_of!(pg_sys::ExprState, resvalue) as i64);
+        let tmpnull_off = builder.ins().iconst(ptr_type, offset_of!(pg_sys::ExprState, resnull) as i64);
         let p_tmpvalue = builder
             .ins()
-            .iconst(ptr_type, addr_of!(state.resvalue) as i64);
+            .iadd(param_state, tmpvalue_off);
         let p_tmpnull = builder
             .ins()
-            .iconst(ptr_type, addr_of!(state.resnull) as i64);
+            .iadd(param_state, tmpnull_off);
+        let p_resultslot = builder
+            .ins()
+            .load(ptr_type, TRUSTED, param_state, offset_of!(pg_sys::ExprState, resultslot) as i32);
         let p_tts_values = builder
             .ins()
-            .iconst(ptr_type, addr_of!((*state.resultslot).tts_values) as i64);
+            .load(ptr_type, TRUSTED, p_resultslot, offset_of!(pg_sys::TupleTableSlot, tts_values) as i32);
         let p_tts_isnull = builder
             .ins()
-            .iconst(ptr_type, addr_of!((*state.resultslot).tts_isnull) as i64);
+            .load(ptr_type, TRUSTED, p_resultslot, offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32);
 
         builder.ins().jump(blocks[0], &[]);
 
@@ -136,6 +143,8 @@ impl Compiler {
 
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
                         // TODO
+                        all = false;
+
                         builder.ins().store(
                             TRUSTED,
                             tmpvalue,
@@ -157,22 +166,19 @@ impl Compiler {
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
                 pg_sys::ExprEvalOp_EEOP_CONST => {
-                    let p_value = builder
+                    let value = builder
                         .ins()
-                        .iconst(ptr_type, addr_of!((*step).d.constval.value) as i64);
-                    let p_isnull = builder
+                        .iconst(datum_type, (*step).d.constval.value.value() as i64);
+                    let isnull = builder
                         .ins()
-                        .iconst(ptr_type, addr_of!((*step).d.constval.isnull) as i64);
-
-                    let value = builder.ins().load(datum_type, TRUSTED, p_value, 0);
-                    let isnull = builder.ins().load(bool_type, TRUSTED, p_isnull, 0);
+                        .iconst(bool_type, (*step).d.constval.isnull as i64);
 
                     let p_resvalue = builder
                         .ins()
-                        .iconst(ptr_type, addr_of!((*step).resvalue) as i64);
+                        .iconst(ptr_type, (*step).resvalue as i64);
                     let p_resnull = builder
                         .ins()
-                        .iconst(ptr_type, addr_of!((*step).resnull) as i64);
+                        .iconst(ptr_type, (*step).resnull as i64);
 
                     builder.ins().store(TRUSTED, value, p_resvalue, 0);
                     builder.ins().store(TRUSTED, isnull, p_resnull, 0);
@@ -201,10 +207,10 @@ impl Compiler {
 
                     let p_resvalue = builder
                         .ins()
-                        .iconst(ptr_type, addr_of!((*step).resvalue) as i64);
+                        .iconst(ptr_type, (*step).resvalue as i64);
                     let p_resnull = builder
                         .ins()
-                        .iconst(ptr_type, addr_of!((*step).resnull) as i64);
+                        .iconst(ptr_type, (*step).resnull as i64);
 
                     let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
