@@ -68,17 +68,17 @@ impl Compiler {
 
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
 
-        let const_block = builder.create_block();
+        let init_block = builder.create_block();
         let blocks = (0..state.steps_len)
             .map(|_| builder.create_block())
             .collect::<Vec<_>>();
 
-        builder.append_block_params_for_function_params(const_block);
-        builder.switch_to_block(const_block);
+        builder.append_block_params_for_function_params(init_block);
+        builder.switch_to_block(init_block);
 
-        let param_state = builder.block_params(const_block)[0];
-        let _param_econtext = builder.block_params(const_block)[1];
-        let param_isnull = builder.block_params(const_block)[2];
+        let param_state = builder.block_params(init_block)[0];
+        let _param_econtext = builder.block_params(init_block)[1];
+        let param_isnull = builder.block_params(init_block)[2];
         let tmpvalue_off = builder.ins().iconst(ptr_type, offset_of!(pg_sys::ExprState, resvalue) as i64);
         let tmpnull_off = builder.ins().iconst(ptr_type, offset_of!(pg_sys::ExprState, resnull) as i64);
         let p_tmpvalue = builder
@@ -90,16 +90,10 @@ impl Compiler {
         let p_resultslot = builder
             .ins()
             .load(ptr_type, TRUSTED, param_state, offset_of!(pg_sys::ExprState, resultslot) as i32);
-        let p_tts_values = builder
-            .ins()
-            .load(ptr_type, TRUSTED, p_resultslot, offset_of!(pg_sys::TupleTableSlot, tts_values) as i32);
-        let p_tts_isnull = builder
-            .ins()
-            .load(ptr_type, TRUSTED, p_resultslot, offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32);
 
         builder.ins().jump(blocks[0], &[]);
 
-        builder.seal_block(const_block);
+        builder.seal_block(init_block);
 
         let mut all = true;
 
@@ -140,6 +134,13 @@ impl Compiler {
 
                     let tmpvalue = builder.ins().load(datum_type, TRUSTED, p_tmpvalue, 0);
                     let tmpnull = builder.ins().load(bool_type, TRUSTED, p_tmpnull, 0);
+
+                    let p_tts_values = builder
+                        .ins()
+                        .load(ptr_type, TRUSTED, p_resultslot, offset_of!(pg_sys::TupleTableSlot, tts_values) as i32);
+                    let p_tts_isnull = builder
+                        .ins()
+                        .load(ptr_type, TRUSTED, p_resultslot, offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32);
 
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
                         // TODO
@@ -331,11 +332,19 @@ impl Compiler {
             state.evalfunc_private = Box::into_raw(jit_ctx) as *mut core::ffi::c_void;
         }
 
-        false // TODO: Disabled due to segaults
+        all
     }
 
     fn release_context(&mut self, _context: &JitContext) {
         // TODO
+    }
+
+    fn reset_after_error(&mut self) {
+        println!("Reset!");
+        self.builder_ctx = FunctionBuilderContext::new();
+        // TODO: Deallocate functions
+        // TODO: Clear self.ctx?
+        // TODO: evalfunc_private?
     }
 }
 
@@ -353,6 +362,7 @@ impl CompilerWrapper {
         self.0.get_or_init(|| RefCell::new(Compiler::new()))
     }
 }
+
 unsafe impl Send for CompilerWrapper {}
 unsafe impl Sync for CompilerWrapper {}
 
@@ -371,8 +381,8 @@ unsafe extern "C" fn release_context(context: *mut pg_sys::JitContext) {
 
 #[pg_guard]
 unsafe extern "C" fn reset_after_error() {
-    let mut _compiler = COMPILER.get_or_init().borrow_mut();
-    // TODO
+    let mut compiler = COMPILER.get_or_init().borrow_mut();
+    compiler.reset_after_error();
 }
 
 #[repr(C)]
