@@ -381,7 +381,28 @@ impl Compiler {
                 }
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNOTNULL => (),
-                //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_TRUE => (),
+                pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_TRUE => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+
+                    let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
+
+                    let then_block = builder.create_block();
+
+                    // TODO: Check explicitly for 1?
+                    builder
+                        .ins()
+                        .brif(resnull, then_block, &[], blocks[i + 1], &[]);
+
+                    builder.switch_to_block(then_block);
+
+                    builder.ins().store(TRUSTED, datum_false, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, bool_false, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+
+                    builder.seal_block(then_block);
+                },
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_NOT_TRUE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_FALSE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_NOT_FALSE => (),
