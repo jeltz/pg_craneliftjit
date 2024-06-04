@@ -25,7 +25,9 @@ struct Compiler {
 }
 
 // TODO: What should the context contain?
-struct JitContext {}
+struct JitContext {
+    func: pg_sys::ExprStateEvalFunc,
+}
 
 impl Compiler {
     fn new() -> Self {
@@ -327,8 +329,11 @@ impl Compiler {
                 .unwrap();
             self.module.finalize_definitions().unwrap();
 
-            state.evalfunc = std::mem::transmute(self.module.get_finalized_function(id));
-            let jit_ctx = Box::new(JitContext {});
+            let func = self.module.get_finalized_function(id);
+            state.evalfunc = Some(wrapper);
+            let jit_ctx = Box::new(JitContext {
+                func: std::mem::transmute(func),
+            });
             state.evalfunc_private = Box::into_raw(jit_ctx) as *mut core::ffi::c_void;
         }
 
@@ -346,6 +351,16 @@ impl Compiler {
         // TODO: Clear self.ctx?
         // TODO: evalfunc_private?
     }
+}
+
+// TODO: This wrapper is only here to make things easier to debug.
+unsafe extern "C" fn wrapper(state: *mut pg_sys::ExprState, econtext: *mut pg_sys::ExprContext, isnull: *mut bool) -> pg_sys::Datum {
+    let func = (*((*state).evalfunc_private as *const JitContext)).func.unwrap();
+
+    notice!("calling compiled expression {:#x}", func as usize);
+    let ret = func(state, econtext, isnull);
+    notice!("ret {:#x}", ret.value() as u64);
+    ret
 }
 
 static COMPILER: CompilerWrapper = CompilerWrapper::new();
