@@ -239,7 +239,18 @@ impl Compiler {
                 //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NULL => (),
                 //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_NULL => (),
                 //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_TRUE => (),
-                //pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNULL => (),
+                pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNULL => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+
+                    let isnull = builder.ins().uload8(datum_type, TRUSTED, p_resnull, 0);
+
+                    let bool_false = builder.ins().iconst(bool_type, 0);
+                    builder.ins().store(TRUSTED, isnull, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, bool_false, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                },
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNOTNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNOTNULL => (),
