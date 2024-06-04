@@ -111,7 +111,6 @@ impl Compiler {
 
             match opcode {
                 pg_sys::ExprEvalOp_EEOP_DONE => {
-                    notice!("EEOP_DONE");
                     let tmpvalue = builder.ins().load(datum_type, TRUSTED, p_tmpvalue, 0);
                     let tmpnull = builder.ins().load(bool_type, TRUSTED, p_tmpnull, 0);
 
@@ -121,14 +120,10 @@ impl Compiler {
                 }
                 //pg_sys::ExprEvalOp_EEOP_INNER_FETCHSOME => (),
                 //pg_sys::ExprEvalOp_EEOP_OUTER_FETCHSOME => (),
-                pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => {
-                    all = false;
-                }
+                //pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => (),
                 //pg_sys::ExprEvalOp_EEOP_INNER_VAR => (),
                 //pg_sys::ExprEvalOp_EEOP_OUTER_VAR => (),
-                pg_sys::ExprEvalOp_EEOP_SCAN_VAR => {
-                    all = false;
-                }
+                //pg_sys::ExprEvalOp_EEOP_SCAN_VAR => (),
                 //pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR => (),
                 //pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR => (),
                 //pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => (),
@@ -157,6 +152,7 @@ impl Compiler {
 
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
                         // TODO
+                        warning!("Unsupported opcode {}", opcode);
                         all = false;
 
                         builder.ins().store(
@@ -195,14 +191,8 @@ impl Compiler {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                pg_sys::ExprEvalOp_EEOP_FUNCEXPR => {
-                    //info!("fn_oid: {}", (*(*step).d.func.finfo).fn_oid.as_u32());
-                    all = false;
-                }
-                pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT => {
-                    //info!("fn_oid: {}", (*(*step).d.func.finfo).fn_oid.as_u32());
-                    all = false;
-                }
+                //pg_sys::ExprEvalOp_EEOP_FUNCEXPR => (),
+                //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT => ();
                 //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_FUSAGE => (),
                 //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT_FUSAGE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_AND_STEP_FIRST => (),
@@ -311,7 +301,10 @@ impl Compiler {
                 //pg_sys::ExprEvalOp_EEOP_AGG_ORDERED_TRANS_DATUM => (),
                 //pg_sys::ExprEvalOp_EEOP_AGG_ORDERED_TRANS_TUPLE => (),
                 pg_sys::ExprEvalOp_EEOP_LAST => debug_assert!(false, "unexpected EEOP_LAST"),
-                opcode => panic!("Unsupported opcode {}", opcode),
+                opcode => {
+                    all = false;
+                    warning!("Unsupported opcode {}", opcode);
+                }
             }
 
             builder.seal_block(blocks[i]);
