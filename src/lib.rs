@@ -569,7 +569,7 @@ mod tests {
     use pgrx::prelude::*;
 
     #[pg_test]
-    fn test_hello_pg_jit_cranelift() {
+    fn test_pg_craneliftjit() {
         Spi::run("SELECT 69, 420;").unwrap();
         Spi::run("SELECT pg_jit_available();").unwrap();
         Spi::run("SELECT 1 + x FROM generate_series(1, 100) x").unwrap();
@@ -581,6 +581,6 @@ pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {}
 
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec!["jit_provider=pg_jit_cranelift", "jit_above_cost=0"]
+        vec!["jit_provider=pg_craneliftjit", "jit_above_cost=0"]
     }
 }
