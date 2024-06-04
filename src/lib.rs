@@ -359,8 +359,14 @@ impl Compiler {
 }
 
 // TODO: This wrapper is only here to make things easier to debug.
-unsafe extern "C" fn wrapper(state: *mut pg_sys::ExprState, econtext: *mut pg_sys::ExprContext, isnull: *mut bool) -> pg_sys::Datum {
-    let func = (*((*state).evalfunc_private as *const JitContext)).func.unwrap();
+unsafe extern "C" fn wrapper(
+    state: *mut pg_sys::ExprState,
+    econtext: *mut pg_sys::ExprContext,
+    isnull: *mut bool,
+) -> pg_sys::Datum {
+    let func = (*((*state).evalfunc_private as *const JitContext))
+        .func
+        .unwrap();
 
     notice!("calling compiled expression {:#x}", func as usize);
     let ret = func(state, econtext, isnull);
