@@ -1,6 +1,7 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::Type;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature};
+use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -71,6 +72,11 @@ impl Compiler {
 
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
 
+        let mut v0sig = Signature::new(CallConv::SystemV);
+        v0sig.returns.push(AbiParam::new(ptr_type));
+        v0sig.params.push(AbiParam::new(ptr_type));
+        let v0sig = builder.import_signature(v0sig);
+
         let init_block = builder.create_block();
         let blocks = (0..state.steps_len)
             .map(|_| builder.create_block())
@@ -82,6 +88,12 @@ impl Compiler {
         let param_state = builder.block_params(init_block)[0];
         let _param_econtext = builder.block_params(init_block)[1];
         let param_isnull = builder.block_params(init_block)[2];
+
+        let bool_false = builder.ins().iconst(bool_type, 0);
+        let bool_true = builder.ins().iconst(bool_type, 1);
+        let datum_false = builder.ins().iconst(datum_type, 0);
+        let datum_true = builder.ins().iconst(datum_type, 1);
+
         let tmpvalue_off = builder
             .ins()
             .iconst(ptr_type, offset_of!(pg_sys::ExprState, resvalue) as i64);
@@ -191,8 +203,114 @@ impl Compiler {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_FUNCEXPR => (),
-                //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT => ();
+                pg_sys::ExprEvalOp_EEOP_FUNCEXPR => {
+                    let fcinfo = (*step).d.func.fcinfo_data;
+
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+
+                    let p_fcinfo = builder.ins().iconst(ptr_type, fcinfo as i64);
+                    let fn_addr = builder.ins().iconst(
+                        ptr_type,
+                        std::mem::transmute::<_, i64>((*step).d.func.fn_addr),
+                    );
+
+                    builder.ins().store(
+                        TRUSTED,
+                        bool_false,
+                        p_fcinfo,
+                        offset_of!(pg_sys::FunctionCallInfoBaseData, isnull) as i32,
+                    );
+
+                    let call = builder.ins().call_indirect(v0sig, fn_addr, &[p_fcinfo]);
+                    let retvalue = builder.inst_results(call)[0];
+
+                    let retisnull = builder.ins().load(
+                        bool_type,
+                        TRUSTED,
+                        p_fcinfo,
+                        offset_of!(pg_sys::FunctionCallInfoBaseData, isnull) as i32,
+                    );
+
+                    builder.ins().store(TRUSTED, retvalue, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, retisnull, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT => {
+                    let fcinfo = (*step).d.func.fcinfo_data;
+                    let nargs = (*step).d.func.nargs as usize;
+
+                    debug_assert!(nargs != 0, "argumentless strict functions are pointless");
+
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+
+                    builder.ins().store(TRUSTED, bool_true, p_resnull, 0);
+
+                    let arg_blocks = (0..nargs + 1)
+                        .map(|_| builder.create_block())
+                        .collect::<Vec<_>>();
+
+                    builder.ins().jump(arg_blocks[0], &[]);
+
+                    for argno in 0..nargs {
+                        builder.switch_to_block(arg_blocks[argno]);
+
+                        let p_argisnull = builder.ins().iconst(
+                            ptr_type,
+                            (std::ptr::addr_of!((*fcinfo).args) as usize
+                                + std::mem::size_of::<pg_sys::NullableDatum>() * argno
+                                + offset_of!(pg_sys::NullableDatum, isnull))
+                                as i64,
+                        );
+
+                        // TODO: Check explicitly for 1?
+                        let argisnull = builder.ins().load(bool_type, TRUSTED, p_argisnull, 0);
+
+                        builder.ins().brif(
+                            argisnull,
+                            blocks[i + 1],
+                            &[],
+                            arg_blocks[argno + 1],
+                            &[],
+                        );
+
+                        builder.seal_block(arg_blocks[argno]);
+                    }
+
+                    builder.switch_to_block(arg_blocks[nargs]);
+
+                    let p_fcinfo = builder.ins().iconst(ptr_type, fcinfo as i64);
+                    let fn_addr = builder.ins().iconst(
+                        ptr_type,
+                        std::mem::transmute::<_, i64>((*step).d.func.fn_addr),
+                    );
+
+                    builder.ins().store(
+                        TRUSTED,
+                        bool_false,
+                        p_fcinfo,
+                        offset_of!(pg_sys::FunctionCallInfoBaseData, isnull) as i32,
+                    );
+
+                    let call = builder.ins().call_indirect(v0sig, fn_addr, &[p_fcinfo]);
+                    let retvalue = builder.inst_results(call)[0];
+
+                    let retisnull = builder.ins().load(
+                        bool_type,
+                        TRUSTED,
+                        p_fcinfo,
+                        offset_of!(pg_sys::FunctionCallInfoBaseData, isnull) as i32,
+                    );
+
+                    builder.ins().store(TRUSTED, retvalue, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, retisnull, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+
+                    builder.seal_block(arg_blocks[nargs]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_FUSAGE => (),
                 //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT_FUSAGE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_AND_STEP_FIRST => (),
@@ -211,7 +329,7 @@ impl Compiler {
                     let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
 
-                    let datum_false = builder.ins().iconst(datum_type, 0);
+                    // TODO: Check explicitly for 1?
                     let is_false = builder.ins().icmp(IntCC::Equal, resvalue, datum_false);
                     let null_or_false = builder.ins().bor(resnull, is_false);
 
@@ -223,7 +341,6 @@ impl Compiler {
 
                     builder.switch_to_block(then_block);
 
-                    let bool_false = builder.ins().iconst(bool_type, 0);
                     builder.ins().store(TRUSTED, datum_false, p_resvalue, 0);
                     builder.ins().store(TRUSTED, bool_false, p_resnull, 0);
 
@@ -243,15 +360,26 @@ impl Compiler {
                     let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
                     let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
 
-                    let isnull = builder.ins().uload8(datum_type, TRUSTED, p_resnull, 0);
+                    let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
+                    let isnull = builder.ins().select(resnull, datum_true, datum_false);
 
-                    let bool_false = builder.ins().iconst(bool_type, 0);
                     builder.ins().store(TRUSTED, isnull, p_resvalue, 0);
                     builder.ins().store(TRUSTED, bool_false, p_resnull, 0);
 
                     builder.ins().jump(blocks[i + 1], &[]);
-                },
-                //pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNOTNULL => (),
+                }
+                pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNOTNULL => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+
+                    let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
+                    let isnotnull = builder.ins().select(resnull, datum_false, datum_true);
+
+                    builder.ins().store(TRUSTED, isnotnull, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, bool_false, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNOTNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_TRUE => (),
