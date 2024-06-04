@@ -1,7 +1,6 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::Type;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature};
-use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -72,7 +71,7 @@ impl Compiler {
 
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
 
-        let mut v0sig = Signature::new(CallConv::SystemV);
+        let mut v0sig = Signature::new(self.module.isa().default_call_conv());
         v0sig.returns.push(AbiParam::new(ptr_type));
         v0sig.params.push(AbiParam::new(ptr_type));
         let v0sig = builder.import_signature(v0sig);
