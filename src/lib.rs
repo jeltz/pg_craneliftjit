@@ -35,6 +35,7 @@ impl Compiler {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
@@ -317,7 +318,7 @@ impl Compiler {
         builder.finalize();
 
         if all {
-            println!("{}", self.ctx.func.display());
+            notice!("{}", self.ctx.func.display());
 
             let id = self
                 .module
@@ -328,6 +329,8 @@ impl Compiler {
                 .map_err(|e| e.to_string())
                 .unwrap();
             self.module.finalize_definitions().unwrap();
+
+            notice!("{}", self.ctx.func.display());
 
             let func = self.module.get_finalized_function(id);
             state.evalfunc = Some(wrapper);
