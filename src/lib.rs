@@ -545,7 +545,10 @@ unsafe extern "C" fn wrapper(
 unsafe extern "C" fn compile_expr(state: *mut pg_sys::ExprState) -> bool {
     let parent = (*state).parent;
 
-    debug_assert!(!parent.is_null());
+    debug_assert!(
+        !parent.is_null(),
+        "we only support expressions with a parent"
+    );
 
     let context;
 
