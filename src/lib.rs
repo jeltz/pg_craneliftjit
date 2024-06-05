@@ -6,8 +6,8 @@ use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::Module;
-use pgrx::prelude::*;
-use pgrx::PgMemoryContexts;
+use pgrx::PgMemoryContexts::{CurrentMemoryContext, TopMemoryContext};
+use pgrx::{pg_guard, pg_sys};
 use std::mem::{offset_of, size_of, transmute};
 use std::os::raw::c_int;
 use std::ptr;
@@ -178,7 +178,7 @@ impl JitContext {
 
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
                         // TODO
-                        warning!("Unsupported opcode {}", opcode);
+                        pgrx::warning!("Unsupported opcode {}", opcode);
                         all = false;
 
                         builder.ins().store(
@@ -475,7 +475,7 @@ impl JitContext {
                 pg_sys::ExprEvalOp_EEOP_LAST => debug_assert!(false, "unexpected EEOP_LAST"),
                 opcode => {
                     all = false;
-                    warning!("Unsupported opcode {}", opcode);
+                    pgrx::warning!("Unsupported opcode {}", opcode);
                 }
             }
 
@@ -488,7 +488,7 @@ impl JitContext {
             self.base.instr.generation_counter.ticks += (Instant::now() - start).as_nanos() as i64;
             self.base.instr.created_functions += 1;
 
-            notice!("{}", self.ctx.func.display());
+            pgrx::notice!("{}", self.ctx.func.display());
 
             let start = Instant::now();
 
@@ -505,7 +505,7 @@ impl JitContext {
             let func = self.module.get_finalized_function(id);
             state.evalfunc = Some(wrapper);
 
-            let jit_ctx = PgMemoryContexts::CurrentMemoryContext.palloc_struct();
+            let jit_ctx = CurrentMemoryContext.palloc_struct();
             ptr::write(
                 jit_ctx,
                 CompiledExprState {
@@ -516,7 +516,7 @@ impl JitContext {
 
             self.base.instr.emission_counter.ticks += (Instant::now() - start).as_nanos() as i64;
 
-            notice!("{}", self.ctx.func.display());
+            pgrx::notice!("{}", self.ctx.func.display());
         }
 
         self.module.clear_context(&mut self.ctx);
@@ -535,9 +535,9 @@ unsafe extern "C" fn wrapper(
         .func
         .unwrap();
 
-    notice!("calling compiled expression {:#x}", func as usize);
+    pgrx::notice!("calling compiled expression {:#x}", func as usize);
     let ret = func(state, econtext, isnull);
-    notice!("ret {:#x}", ret.value() as u64);
+    pgrx::notice!("ret {:#x}", ret.value() as u64);
     ret
 }
 
@@ -553,7 +553,7 @@ unsafe extern "C" fn compile_expr(state: *mut pg_sys::ExprState) -> bool {
     let context;
 
     if (*(*parent).state).es_jit.is_null() {
-        context = PgMemoryContexts::TopMemoryContext.palloc_struct();
+        context = TopMemoryContext.palloc_struct();
         ptr::write(context, JitContext::new((*(*parent).state).es_jit_flags));
 
         sys::ResourceOwnerEnlargeJIT((*context).base.resowner);
