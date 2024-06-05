@@ -363,7 +363,18 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_BOOL_OR_STEP_FIRST => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_OR_STEP => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_OR_STEP_LAST => (),
-                //pg_sys::ExprEvalOp_EEOP_BOOL_NOT_STEP => (),
+                pg_sys::ExprEvalOp_EEOP_BOOL_NOT_STEP => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+
+                    let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
+
+                    // TODO: Check explicitly for 1?
+                    let negvalue = builder.ins().select(resvalue, datum_false, datum_true);
+
+                    builder.ins().store(TRUSTED, negvalue, p_resvalue, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                },
                 pg_sys::ExprEvalOp_EEOP_QUAL => {
                     let jumpdone = (*step).d.qualexpr.jumpdone as usize;
 
