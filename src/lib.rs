@@ -38,9 +38,8 @@ impl JitContext {
     fn new(jit_flags: c_int) -> Self {
         // TODO: Check flags
         let mut flag_builder = settings::builder();
-        flag_builder.set("use_colocated_libcalls", "false").unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap(); // TODO: Control via GUC
+        flag_builder.set("use_colocated_libcalls", "true").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap(); // TODO: Control via GUC?
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
