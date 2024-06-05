@@ -502,11 +502,15 @@ impl JitContext {
 
             let func = self.module.get_finalized_function(id);
             state.evalfunc = Some(wrapper);
-            // TODO: These are leaked
-            let jit_ctx = Box::new(CompiledExprState {
-                func: transmute(func),
-            });
-            state.evalfunc_private = Box::into_raw(jit_ctx) as *mut core::ffi::c_void;
+
+            let jit_ctx = PgMemoryContexts::CurrentMemoryContext.palloc_struct();
+            ptr::write(
+                jit_ctx,
+                CompiledExprState {
+                    func: transmute(func),
+                },
+            );
+            state.evalfunc_private = jit_ctx as *mut core::ffi::c_void;
         }
 
         self.module.clear_context(&mut self.ctx);
@@ -540,7 +544,7 @@ unsafe extern "C" fn compile_expr(state: *mut pg_sys::ExprState) -> bool {
     let context;
 
     if (*(*parent).state).es_jit.is_null() {
-        context = PgMemoryContexts::TopMemoryContext.palloc_struct::<JitContext>();
+        context = PgMemoryContexts::TopMemoryContext.palloc_struct();
         ptr::write(context, JitContext::new((*(*parent).state).es_jit_flags));
 
         sys::ResourceOwnerEnlargeJIT((*context).base.resowner);
