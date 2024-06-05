@@ -28,6 +28,7 @@ struct JitContext {
     builder_ctx: FunctionBuilderContext,
     module: JITModule,
     ctx: cranelift_codegen::Context,
+    make_ro_fn: cranelift_module::FuncId,
 }
 
 struct CompiledExprState {
@@ -38,7 +39,6 @@ impl JitContext {
     fn new(jit_flags: c_int) -> Self {
         // TODO: Check flags
         let mut flag_builder = settings::builder();
-        flag_builder.set("use_colocated_libcalls", "true").unwrap();
         flag_builder.set("opt_level", "speed").unwrap(); // TODO: Control via GUC?
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
@@ -48,7 +48,21 @@ impl JitContext {
             .unwrap();
         let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        let module = JITModule::new(builder);
+        let mut module = JITModule::new(builder);
+
+        let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
+
+        let mut make_ro_sig = Signature::new(module.isa().default_call_conv());
+        make_ro_sig.returns.push(AbiParam::new(datum_type));
+        make_ro_sig.params.push(AbiParam::new(datum_type));
+
+        let make_ro_fn = module
+            .declare_function(
+                "MakeExpandedObjectReadOnlyInternal",
+                cranelift_module::Linkage::Local,
+                &make_ro_sig,
+            )
+            .unwrap();
 
         Self {
             base: sys::JitContext {
@@ -65,6 +79,7 @@ impl JitContext {
             builder_ctx: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             module,
+            make_ro_fn,
         }
     }
 
@@ -90,6 +105,10 @@ impl JitContext {
         v0sig.returns.push(AbiParam::new(ptr_type));
         v0sig.params.push(AbiParam::new(ptr_type));
         let v0sig = builder.import_signature(v0sig);
+
+        let make_ro_fn = self
+            .module
+            .declare_func_in_func(self.make_ro_fn, builder.func);
 
         let init_block = builder.create_block();
         let blocks = (0..state.steps_len)
@@ -176,17 +195,33 @@ impl JitContext {
                         offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32,
                     );
 
+                    builder
+                        .ins()
+                        .store(TRUSTED, tmpnull, p_tts_isnull, resultnum);
+
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
-                        // TODO
-                        pgrx::warning!("Unsupported opcode {}", opcode);
-                        all = false;
+                        let call_block = builder.create_block();
+
+                        // TODO: Check explicitly for 1?
+                        builder
+                            .ins()
+                            .brif(tmpnull, blocks[i + 1], &[], call_block, &[]);
+
+                        builder.switch_to_block(call_block);
+
+                        let call = builder.ins().call(make_ro_fn, &[tmpvalue]);
+                        let retvalue = builder.inst_results(call)[0];
 
                         builder.ins().store(
                             TRUSTED,
-                            tmpvalue,
+                            retvalue,
                             p_tts_values,
                             resultnum * DATUM_SIZE,
                         );
+
+                        builder.ins().jump(blocks[i + 1], &[]);
+
+                        builder.seal_block(call_block);
                     } else {
                         builder.ins().store(
                             TRUSTED,
@@ -194,12 +229,9 @@ impl JitContext {
                             p_tts_values,
                             resultnum * DATUM_SIZE,
                         );
-                    }
-                    builder
-                        .ins()
-                        .store(TRUSTED, tmpnull, p_tts_isnull, resultnum);
 
-                    builder.ins().jump(blocks[i + 1], &[]);
+                        builder.ins().jump(blocks[i + 1], &[]);
+                    }
                 }
                 pg_sys::ExprEvalOp_EEOP_CONST => {
                     let value = builder
