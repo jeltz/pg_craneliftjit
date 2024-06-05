@@ -5,7 +5,6 @@ use std::os::raw::c_int;
 pub struct JitInstrumentation {
     pub created_functions: pg_sys::__ssize_t,
     pub generation_counter: pg_sys::instr_time,
-    pub deform_counter: pg_sys::instr_time,
     pub inlining_counter: pg_sys::instr_time,
     pub optimization_counter: pg_sys::instr_time,
     pub emission_counter: pg_sys::instr_time,

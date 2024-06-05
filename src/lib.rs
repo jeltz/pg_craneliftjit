@@ -11,6 +11,7 @@ use pgrx::PgMemoryContexts;
 use std::mem::{offset_of, size_of, transmute};
 use std::os::raw::c_int;
 use std::ptr;
+use std::time::Instant;
 
 mod sys;
 
@@ -57,7 +58,6 @@ impl JitContext {
                 instr: sys::JitInstrumentation {
                     created_functions: 0,
                     generation_counter: pg_sys::instr_time { ticks: 0 },
-                    deform_counter: pg_sys::instr_time { ticks: 0 },
                     inlining_counter: pg_sys::instr_time { ticks: 0 },
                     optimization_counter: pg_sys::instr_time { ticks: 0 },
                     emission_counter: pg_sys::instr_time { ticks: 0 },
@@ -70,6 +70,8 @@ impl JitContext {
     }
 
     unsafe fn compile_expr(&mut self, state: &mut pg_sys::ExprState) -> bool {
+        let start = Instant::now();
+
         let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
         let bool_type = Type::int_with_byte_size(BOOL_SIZE as u16).unwrap();
         let ptr_type = Type::int_with_byte_size(PTR_SIZE as u16).unwrap();
@@ -484,9 +486,12 @@ impl JitContext {
         builder.finalize();
 
         if all {
+            self.base.instr.generation_counter.ticks += (Instant::now() - start).as_nanos() as i64;
             self.base.instr.created_functions += 1;
 
             notice!("{}", self.ctx.func.display());
+
+            let start = Instant::now();
 
             let id = self
                 .module
@@ -497,8 +502,6 @@ impl JitContext {
                 .map_err(|e| e.to_string())
                 .unwrap();
             self.module.finalize_definitions().unwrap();
-
-            notice!("{}", self.ctx.func.display());
 
             let func = self.module.get_finalized_function(id);
             state.evalfunc = Some(wrapper);
@@ -511,6 +514,10 @@ impl JitContext {
                 },
             );
             state.evalfunc_private = jit_ctx as *mut core::ffi::c_void;
+
+            self.base.instr.emission_counter.ticks += (Instant::now() - start).as_nanos() as i64;
+
+            notice!("{}", self.ctx.func.display());
         }
 
         self.module.clear_context(&mut self.ctx);
