@@ -7,8 +7,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::Module;
 use pgrx::prelude::*;
-use std::cell::OnceCell;
-use std::cell::RefCell;
+use pgrx::PgMemoryContexts;
 use std::mem::offset_of;
 
 pgrx::pg_module_magic!();
@@ -18,19 +17,43 @@ const DATUM_SIZE: i32 = std::mem::size_of::<pg_sys::Datum>() as i32;
 const BOOL_SIZE: i32 = std::mem::size_of::<bool>() as i32;
 const PTR_SIZE: i32 = std::mem::size_of::<*const bool>() as i32;
 
-struct Compiler {
+#[repr(C)]
+struct JitInstrumentation {
+    created_functions: pg_sys::__ssize_t,
+    generation_counter: pg_sys::instr_time,
+    deform_counter: pg_sys::instr_time,
+    inlining_counter: pg_sys::instr_time,
+    optimization_counter: pg_sys::instr_time,
+    emission_counter: pg_sys::instr_time,
+}
+
+#[repr(C)]
+struct BaseJitContext {
+    flags: ::std::os::raw::c_int,
+    resowner: *mut pg_sys::ResourceOwnerData,
+    instr: JitInstrumentation,
+}
+
+extern "C" {
+    fn ResourceOwnerEnlargeJIT(owner: *mut pg_sys::ResourceOwnerData);
+    fn ResourceOwnerRememberJIT(owner: *mut pg_sys::ResourceOwnerData, handle: pg_sys::Datum);
+}
+
+#[repr(C)]
+struct JitContext {
+    base: BaseJitContext,
     builder_ctx: FunctionBuilderContext,
     module: JITModule,
     ctx: cranelift_codegen::Context,
 }
 
 // TODO: What should the context contain?
-struct JitContext {
+struct CompiledExprState {
     func: pg_sys::ExprStateEvalFunc,
 }
 
-impl Compiler {
-    fn new() -> Self {
+impl JitContext {
+    fn new(jit_flags: ::std::os::raw::c_int) -> Self {
         // TODO: Check flags
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -47,6 +70,18 @@ impl Compiler {
         let module = JITModule::new(builder);
 
         Self {
+            base: BaseJitContext {
+                flags: jit_flags,
+                resowner: unsafe { pg_sys::CurrentResourceOwner },
+                instr: JitInstrumentation {
+                    created_functions: 0,
+                    generation_counter: pg_sys::instr_time { ticks: 0 },
+                    deform_counter: pg_sys::instr_time { ticks: 0 },
+                    inlining_counter: pg_sys::instr_time { ticks: 0 },
+                    optimization_counter: pg_sys::instr_time { ticks: 0 },
+                    emission_counter: pg_sys::instr_time { ticks: 0 },
+                },
+            },
             builder_ctx: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             module,
@@ -57,8 +92,6 @@ impl Compiler {
         let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
         let bool_type = Type::int_with_byte_size(BOOL_SIZE as u16).unwrap();
         let ptr_type = Type::int_with_byte_size(PTR_SIZE as u16).unwrap();
-
-        self.module.clear_context(&mut self.ctx); // TODO: Move to after?
 
         self.ctx
             .func
@@ -402,7 +435,7 @@ impl Compiler {
                     builder.ins().jump(blocks[i + 1], &[]);
 
                     builder.seal_block(then_block);
-                },
+                }
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_NOT_TRUE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_FALSE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_NOT_FALSE => (),
@@ -472,6 +505,8 @@ impl Compiler {
         builder.finalize();
 
         if all {
+            self.base.instr.created_functions += 1;
+
             notice!("{}", self.ctx.func.display());
 
             let id = self
@@ -488,25 +523,16 @@ impl Compiler {
 
             let func = self.module.get_finalized_function(id);
             state.evalfunc = Some(wrapper);
-            let jit_ctx = Box::new(JitContext {
+            // TODO: These are leaked
+            let jit_ctx = Box::new(CompiledExprState {
                 func: std::mem::transmute(func),
             });
             state.evalfunc_private = Box::into_raw(jit_ctx) as *mut core::ffi::c_void;
         }
 
+        self.module.clear_context(&mut self.ctx);
+
         all
-    }
-
-    fn release_context(&mut self, _context: &JitContext) {
-        // TODO
-    }
-
-    fn reset_after_error(&mut self) {
-        println!("Reset!");
-        self.builder_ctx = FunctionBuilderContext::new();
-        // TODO: Deallocate functions
-        // TODO: Clear self.ctx?
-        // TODO: evalfunc_private?
     }
 }
 
@@ -516,7 +542,7 @@ unsafe extern "C" fn wrapper(
     econtext: *mut pg_sys::ExprContext,
     isnull: *mut bool,
 ) -> pg_sys::Datum {
-    let func = (*((*state).evalfunc_private as *const JitContext))
+    let func = (*((*state).evalfunc_private as *const CompiledExprState))
         .func
         .unwrap();
 
@@ -526,42 +552,37 @@ unsafe extern "C" fn wrapper(
     ret
 }
 
-static COMPILER: CompilerWrapper = CompilerWrapper::new();
-
-// Trust that PostgreSQL is single-threaded
-struct CompilerWrapper(OnceCell<RefCell<Compiler>>);
-
-impl CompilerWrapper {
-    const fn new() -> Self {
-        Self(OnceCell::new())
-    }
-
-    unsafe fn get_or_init(&self) -> &RefCell<Compiler> {
-        self.0.get_or_init(|| RefCell::new(Compiler::new()))
-    }
-}
-
-unsafe impl Send for CompilerWrapper {}
-unsafe impl Sync for CompilerWrapper {}
-
 #[pg_guard]
 unsafe extern "C" fn compile_expr(state: *mut pg_sys::ExprState) -> bool {
-    let mut compiler = COMPILER.get_or_init().borrow_mut();
-    compiler.compile_expr(&mut *state)
+    let parent = (*state).parent;
+
+    debug_assert!(!parent.is_null());
+
+    let context;
+
+    if (*(*parent).state).es_jit.is_null() {
+        context = PgMemoryContexts::TopMemoryContext.palloc_struct::<JitContext>();
+        std::ptr::write(context, JitContext::new((*(*parent).state).es_jit_flags));
+
+        ResourceOwnerEnlargeJIT((*context).base.resowner);
+        ResourceOwnerRememberJIT((*context).base.resowner, context.into());
+
+        (*(*parent).state).es_jit = context as *mut pg_sys::JitContext;
+    } else {
+        context = (*(*parent).state).es_jit as *mut JitContext;
+    }
+
+    (*context).compile_expr(&mut *state)
 }
 
 #[pg_guard]
 unsafe extern "C" fn release_context(context: *mut pg_sys::JitContext) {
-    let mut compiler = COMPILER.get_or_init().borrow_mut();
-    let context = Box::from_raw(context as *mut JitContext);
-    compiler.release_context(&context);
+    let context = context as *mut JitContext;
+    std::ptr::drop_in_place(context);
 }
 
 #[pg_guard]
-unsafe extern "C" fn reset_after_error() {
-    let mut compiler = COMPILER.get_or_init().borrow_mut();
-    compiler.reset_after_error();
-}
+unsafe extern "C" fn reset_after_error() {}
 
 #[repr(C)]
 pub struct JitProviderCallbacks {
