@@ -8,57 +8,38 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::Module;
 use pgrx::prelude::*;
 use pgrx::PgMemoryContexts;
-use std::mem::offset_of;
+use std::mem::{offset_of, size_of, transmute};
+use std::os::raw::c_int;
+use std::ptr;
+
+mod sys;
 
 pgrx::pg_module_magic!();
 
 const TRUSTED: MemFlags = MemFlags::trusted(); // TODO: Is this assumption of alignment correct?
-const DATUM_SIZE: i32 = std::mem::size_of::<pg_sys::Datum>() as i32;
-const BOOL_SIZE: i32 = std::mem::size_of::<bool>() as i32;
-const PTR_SIZE: i32 = std::mem::size_of::<*const bool>() as i32;
-
-#[repr(C)]
-struct JitInstrumentation {
-    created_functions: pg_sys::__ssize_t,
-    generation_counter: pg_sys::instr_time,
-    deform_counter: pg_sys::instr_time,
-    inlining_counter: pg_sys::instr_time,
-    optimization_counter: pg_sys::instr_time,
-    emission_counter: pg_sys::instr_time,
-}
-
-#[repr(C)]
-struct BaseJitContext {
-    flags: ::std::os::raw::c_int,
-    resowner: *mut pg_sys::ResourceOwnerData,
-    instr: JitInstrumentation,
-}
-
-extern "C" {
-    fn ResourceOwnerEnlargeJIT(owner: *mut pg_sys::ResourceOwnerData);
-    fn ResourceOwnerRememberJIT(owner: *mut pg_sys::ResourceOwnerData, handle: pg_sys::Datum);
-}
+const DATUM_SIZE: i32 = size_of::<pg_sys::Datum>() as i32;
+const BOOL_SIZE: i32 = size_of::<bool>() as i32;
+const PTR_SIZE: i32 = size_of::<*const bool>() as i32;
 
 #[repr(C)]
 struct JitContext {
-    base: BaseJitContext,
+    base: sys::JitContext,
     builder_ctx: FunctionBuilderContext,
     module: JITModule,
     ctx: cranelift_codegen::Context,
 }
 
-// TODO: What should the context contain?
 struct CompiledExprState {
     func: pg_sys::ExprStateEvalFunc,
 }
 
 impl JitContext {
-    fn new(jit_flags: ::std::os::raw::c_int) -> Self {
+    fn new(jit_flags: c_int) -> Self {
         // TODO: Check flags
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap(); // TODO: Control via GUC
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
@@ -70,10 +51,10 @@ impl JitContext {
         let module = JITModule::new(builder);
 
         Self {
-            base: BaseJitContext {
+            base: sys::JitContext {
                 flags: jit_flags,
                 resowner: unsafe { pg_sys::CurrentResourceOwner },
-                instr: JitInstrumentation {
+                instr: sys::JitInstrumentation {
                     created_functions: 0,
                     generation_counter: pg_sys::instr_time { ticks: 0 },
                     deform_counter: pg_sys::instr_time { ticks: 0 },
@@ -242,10 +223,9 @@ impl JitContext {
                     let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
 
                     let p_fcinfo = builder.ins().iconst(ptr_type, fcinfo as i64);
-                    let fn_addr = builder.ins().iconst(
-                        ptr_type,
-                        std::mem::transmute::<_, i64>((*step).d.func.fn_addr),
-                    );
+                    let fn_addr = builder
+                        .ins()
+                        .iconst(ptr_type, transmute::<_, i64>((*step).d.func.fn_addr));
 
                     builder.ins().store(
                         TRUSTED,
@@ -291,8 +271,8 @@ impl JitContext {
 
                         let p_argisnull = builder.ins().iconst(
                             ptr_type,
-                            (std::ptr::addr_of!((*fcinfo).args) as usize
-                                + std::mem::size_of::<pg_sys::NullableDatum>() * argno
+                            (ptr::addr_of!((*fcinfo).args) as usize
+                                + size_of::<pg_sys::NullableDatum>() * argno
                                 + offset_of!(pg_sys::NullableDatum, isnull))
                                 as i64,
                         );
@@ -314,10 +294,9 @@ impl JitContext {
                     builder.switch_to_block(arg_blocks[nargs]);
 
                     let p_fcinfo = builder.ins().iconst(ptr_type, fcinfo as i64);
-                    let fn_addr = builder.ins().iconst(
-                        ptr_type,
-                        std::mem::transmute::<_, i64>((*step).d.func.fn_addr),
-                    );
+                    let fn_addr = builder
+                        .ins()
+                        .iconst(ptr_type, transmute::<_, i64>((*step).d.func.fn_addr));
 
                     builder.ins().store(
                         TRUSTED,
@@ -525,7 +504,7 @@ impl JitContext {
             state.evalfunc = Some(wrapper);
             // TODO: These are leaked
             let jit_ctx = Box::new(CompiledExprState {
-                func: std::mem::transmute(func),
+                func: transmute(func),
             });
             state.evalfunc_private = Box::into_raw(jit_ctx) as *mut core::ffi::c_void;
         }
@@ -562,10 +541,10 @@ unsafe extern "C" fn compile_expr(state: *mut pg_sys::ExprState) -> bool {
 
     if (*(*parent).state).es_jit.is_null() {
         context = PgMemoryContexts::TopMemoryContext.palloc_struct::<JitContext>();
-        std::ptr::write(context, JitContext::new((*(*parent).state).es_jit_flags));
+        ptr::write(context, JitContext::new((*(*parent).state).es_jit_flags));
 
-        ResourceOwnerEnlargeJIT((*context).base.resowner);
-        ResourceOwnerRememberJIT((*context).base.resowner, context.into());
+        sys::ResourceOwnerEnlargeJIT((*context).base.resowner);
+        sys::ResourceOwnerRememberJIT((*context).base.resowner, context.into());
 
         (*(*parent).state).es_jit = context as *mut pg_sys::JitContext;
     } else {
@@ -578,22 +557,15 @@ unsafe extern "C" fn compile_expr(state: *mut pg_sys::ExprState) -> bool {
 #[pg_guard]
 unsafe extern "C" fn release_context(context: *mut pg_sys::JitContext) {
     let context = context as *mut JitContext;
-    std::ptr::drop_in_place(context);
+    ptr::drop_in_place(context);
 }
 
 #[pg_guard]
 unsafe extern "C" fn reset_after_error() {}
 
-#[repr(C)]
-pub struct JitProviderCallbacks {
-    reset_after_error: Option<unsafe extern "C" fn()>,
-    release_context: Option<unsafe extern "C" fn(context: *mut pg_sys::JitContext)>,
-    compile_expr: Option<unsafe extern "C" fn(state: *mut pg_sys::ExprState) -> bool>,
-}
-
 #[allow(non_snake_case)]
 #[no_mangle]
-pub unsafe extern "C" fn _PG_jit_provider_init(cb: *mut JitProviderCallbacks) {
+pub unsafe extern "C" fn _PG_jit_provider_init(cb: *mut sys::JitProviderCallbacks) {
     // TODO: Remove debug logging?
     let mut builder = env_logger::Builder::new();
     builder.target(env_logger::Target::Stdout);
