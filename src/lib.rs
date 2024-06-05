@@ -575,12 +575,6 @@ unsafe extern "C" fn reset_after_error() {}
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "C" fn _PG_jit_provider_init(cb: *mut sys::JitProviderCallbacks) {
-    // TODO: Remove debug logging?
-    let mut builder = env_logger::Builder::new();
-    builder.target(env_logger::Target::Stdout);
-    //builder.filter_level(log::LevelFilter::Debug);
-    builder.init();
-
     (*cb).reset_after_error = Some(reset_after_error);
     (*cb).release_context = Some(release_context);
     (*cb).compile_expr = Some(compile_expr);

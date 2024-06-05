@@ -26,8 +26,6 @@ cranelift-jit = "0.108"
 cranelift-module = "0.108"
 cranelift-native = "0.108"
 pgrx = "=0.12.0-alpha.1"
-env_logger = "*"
-log = "*"
 
 [dev-dependencies]
 pgrx-tests = "=0.12.0-alpha.1"
