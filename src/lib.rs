@@ -564,7 +564,6 @@ unsafe extern "C" fn release_context(context: *mut pg_sys::JitContext) {
     ptr::drop_in_place(context);
 }
 
-#[pg_guard]
 unsafe extern "C" fn reset_after_error() {}
 
 #[allow(non_snake_case)]
