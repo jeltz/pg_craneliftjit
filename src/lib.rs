@@ -670,8 +670,62 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_PARAM_EXEC => (),
                 //pg_sys::ExprEvalOp_EEOP_PARAM_EXTERN => (),
                 //pg_sys::ExprEvalOp_EEOP_PARAM_CALLBACK => (),
-                //pg_sys::ExprEvalOp_EEOP_CASE_TESTVAL => (),
-                //pg_sys::ExprEvalOp_EEOP_MAKE_READONLY => (),
+                pg_sys::ExprEvalOp_EEOP_CASE_TESTVAL => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let (p_casevalue, p_casenull);
+
+                    if !(*op).d.casetest.value.is_null() {
+                        p_casevalue = builder.ins().iconst(ptr_type, (*op).d.casetest.value as i64);
+                        p_casenull = builder.ins().iconst(ptr_type, (*op).d.casetest.isnull as i64);
+                    } else {
+                        p_casevalue = builder.ins().load(ptr_type, TRUSTED, param_econtext, offset_of!(pg_sys::ExprContext, caseValue_datum) as i32);
+                        p_casenull = builder.ins().load(ptr_type, TRUSTED, param_econtext, offset_of!(pg_sys::ExprContext, caseValue_isNull) as i32);
+                    }
+
+                    let casevalue = builder.ins().load(datum_type, TRUSTED, p_casevalue, 0);
+                    let casenull = builder.ins().load(bool_type, TRUSTED, p_casenull, 0);
+
+                    builder.ins().store(TRUSTED, casevalue, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, casenull, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_MAKE_READONLY => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let p_rovalue = builder
+                        .ins()
+                        .iconst(ptr_type, (*op).d.make_readonly.value as i64);
+                    let p_ronull = builder
+                        .ins()
+                        .iconst(ptr_type, (*op).d.make_readonly.isnull as i64);
+
+                    let ronull = builder.ins().load(bool_type, TRUSTED, p_ronull, 0);
+
+                    builder.ins().store(TRUSTED, ronull, p_resnull, 0);
+
+                    let call_block = builder.create_block();
+
+                    builder
+                        .ins()
+                        .brif(ronull, blocks[i + 1], &[], call_block, &[]);
+
+                    builder.switch_to_block(call_block);
+
+                    let rovalue = builder.ins().load(datum_type, TRUSTED, p_rovalue, 0);
+
+                    let call = builder.ins().call(make_ro_fn, &[rovalue]);
+                    let retvalue = builder.inst_results(call)[0];
+
+                    builder.ins().store(TRUSTED, retvalue, p_resvalue, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+
+                    builder.seal_block(call_block);
+                }
                 //pg_sys::ExprEvalOp_EEOP_IOCOERCE => (),
                 //pg_sys::ExprEvalOp_EEOP_DISTINCT => (),
                 //pg_sys::ExprEvalOp_EEOP_NOT_DISTINCT => (),
