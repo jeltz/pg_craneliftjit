@@ -1,5 +1,5 @@
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::types::{Type, I64};
+use cranelift_codegen::ir::types::Type;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature};
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
@@ -21,6 +21,7 @@ const TRUSTED: MemFlags = MemFlags::trusted(); // TODO: Is this assumption of al
 const DATUM_SIZE: i32 = size_of::<pg_sys::Datum>() as i32;
 const BOOL_SIZE: i32 = size_of::<bool>() as i32;
 const PTR_SIZE: i32 = size_of::<*const bool>() as i32;
+const INT_SIZE: i32 = size_of::<c_int>() as i32;
 
 #[repr(C)]
 struct JitContext {
@@ -53,7 +54,7 @@ impl JitContext {
 
         let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
         let ptr_type = Type::int_with_byte_size(PTR_SIZE as u16).unwrap();
-        let int_type = I64; // TODO
+        let int_type = Type::int_with_byte_size(INT_SIZE as u16).unwrap();
 
         let mut slot_get_sig = Signature::new(module.isa().default_call_conv());
         slot_get_sig.params.push(AbiParam::new(ptr_type));
@@ -105,7 +106,7 @@ impl JitContext {
         let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
         let bool_type = Type::int_with_byte_size(BOOL_SIZE as u16).unwrap();
         let ptr_type = Type::int_with_byte_size(PTR_SIZE as u16).unwrap();
-        let int_type = I64; // TODO
+        let int_type = Type::int_with_byte_size(INT_SIZE as u16).unwrap();
 
         self.ctx
             .func
