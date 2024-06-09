@@ -206,15 +206,14 @@ impl JitContext {
                 | pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => {
                     let fetch_block = builder.create_block();
 
-                    // TODO: Rename
-                    let p_slot = match opcode {
+                    let p_p_slot = match opcode {
                         pg_sys::ExprEvalOp_EEOP_INNER_FETCHSOME => p_innerslot,
                         pg_sys::ExprEvalOp_EEOP_OUTER_FETCHSOME => p_outerslot,
                         pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => p_scanslot,
                         _ => unreachable!(),
                     };
 
-                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_slot, 0);
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_p_slot, 0);
 
                     let slot_nvalid = builder.ins().uload16(
                         int_type,
@@ -251,15 +250,14 @@ impl JitContext {
                 | pg_sys::ExprEvalOp_EEOP_SCAN_VAR => {
                     let attnum = (*op).d.var.attnum;
 
-                    // TODO: Rename
-                    let p_slot = match opcode {
+                    let p_p_slot = match opcode {
                         pg_sys::ExprEvalOp_EEOP_INNER_VAR => p_innerslot,
                         pg_sys::ExprEvalOp_EEOP_OUTER_VAR => p_outerslot,
                         pg_sys::ExprEvalOp_EEOP_SCAN_VAR => p_scanslot,
                         _ => unreachable!(),
                     };
 
-                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_slot, 0);
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_p_slot, 0);
 
                     let p_values = builder.ins().load(
                         ptr_type,
@@ -381,7 +379,6 @@ impl JitContext {
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
                         let call_block = builder.create_block();
 
-                        // TODO: Check explicitly for 1?
                         builder
                             .ins()
                             .brif(tmpnull, blocks[i + 1], &[], call_block, &[]);
@@ -489,7 +486,6 @@ impl JitContext {
                                 as i64,
                         );
 
-                        // TODO: Check explicitly for 1?
                         let argisnull = builder.ins().load(bool_type, TRUSTED, p_argisnull, 0);
 
                         builder.ins().brif(
@@ -547,7 +543,6 @@ impl JitContext {
 
                     let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
 
-                    // TODO: Check explicitly for 1?
                     let negvalue = builder.ins().select(resvalue, datum_false, datum_true);
 
                     builder.ins().store(TRUSTED, negvalue, p_resvalue, 0);
@@ -563,7 +558,6 @@ impl JitContext {
                     let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
 
-                    // TODO: Check explicitly for 1?
                     let is_false = builder.ins().icmp(IntCC::Equal, resvalue, datum_false);
                     let null_or_false = builder.ins().bor(resnull, is_false);
 
@@ -587,9 +581,44 @@ impl JitContext {
 
                     builder.ins().jump(blocks[jumpdone], &[]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NULL => (),
-                //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_NULL => (),
-                //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_TRUE => (),
+                pg_sys::ExprEvalOp_EEOP_JUMP_IF_NULL => {
+                    let jumpdone = (*op).d.jump.jumpdone as usize;
+
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
+
+                    builder
+                        .ins()
+                        .brif(resnull, blocks[jumpdone], &[], blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_NULL => {
+                    let jumpdone = (*op).d.jump.jumpdone as usize;
+
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
+
+                    builder
+                        .ins()
+                        .brif(resnull, blocks[i + 1], &[], blocks[jumpdone], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_TRUE => {
+                    let jumpdone = (*op).d.jump.jumpdone as usize;
+
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
+                    let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
+
+                    let is_false = builder.ins().icmp(IntCC::Equal, resvalue, datum_false);
+                    let null_or_false = builder.ins().bor(resnull, is_false);
+
+                    builder
+                        .ins()
+                        .brif(null_or_false, blocks[jumpdone], &[], blocks[i + 1], &[]);
+                }
                 pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNULL => {
                     let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
                     let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
@@ -624,7 +653,6 @@ impl JitContext {
 
                     let then_block = builder.create_block();
 
-                    // TODO: Check explicitly for 1?
                     builder
                         .ins()
                         .brif(resnull, then_block, &[], blocks[i + 1], &[]);
