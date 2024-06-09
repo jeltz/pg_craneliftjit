@@ -285,7 +285,6 @@ impl JitContext {
                     let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     builder.ins().store(TRUSTED, value, p_resvalue, 0);
-
                     builder.ins().store(TRUSTED, isnull, p_resnull, 0);
 
                     builder.ins().jump(blocks[i + 1], &[]);
@@ -346,7 +345,6 @@ impl JitContext {
                     builder
                         .ins()
                         .store(TRUSTED, value, p_result_values, resultnum * DATUM_SIZE);
-
                     builder
                         .ins()
                         .store(TRUSTED, isnull, p_result_isnull, resultnum * BOOL_SIZE);
