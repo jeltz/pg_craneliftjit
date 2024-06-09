@@ -677,11 +677,25 @@ impl JitContext {
                     let (p_casevalue, p_casenull);
 
                     if !(*op).d.casetest.value.is_null() {
-                        p_casevalue = builder.ins().iconst(ptr_type, (*op).d.casetest.value as i64);
-                        p_casenull = builder.ins().iconst(ptr_type, (*op).d.casetest.isnull as i64);
+                        p_casevalue = builder
+                            .ins()
+                            .iconst(ptr_type, (*op).d.casetest.value as i64);
+                        p_casenull = builder
+                            .ins()
+                            .iconst(ptr_type, (*op).d.casetest.isnull as i64);
                     } else {
-                        p_casevalue = builder.ins().load(ptr_type, TRUSTED, param_econtext, offset_of!(pg_sys::ExprContext, caseValue_datum) as i32);
-                        p_casenull = builder.ins().load(ptr_type, TRUSTED, param_econtext, offset_of!(pg_sys::ExprContext, caseValue_isNull) as i32);
+                        p_casevalue = builder.ins().load(
+                            ptr_type,
+                            TRUSTED,
+                            param_econtext,
+                            offset_of!(pg_sys::ExprContext, caseValue_datum) as i32,
+                        );
+                        p_casenull = builder.ins().load(
+                            ptr_type,
+                            TRUSTED,
+                            param_econtext,
+                            offset_of!(pg_sys::ExprContext, caseValue_isNull) as i32,
+                        );
                     }
 
                     let casevalue = builder.ins().load(datum_type, TRUSTED, p_casevalue, 0);
