@@ -1,5 +1,5 @@
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::types::Type;
+use cranelift_codegen::ir::types::{Type, I64};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature};
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
@@ -28,6 +28,7 @@ struct JitContext {
     builder_ctx: FunctionBuilderContext,
     module: JITModule,
     ctx: cranelift_codegen::Context,
+    slot_get_fn: cranelift_module::FuncId,
     make_ro_fn: cranelift_module::FuncId,
 }
 
@@ -51,6 +52,20 @@ impl JitContext {
         let mut module = JITModule::new(builder);
 
         let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
+        let ptr_type = Type::int_with_byte_size(PTR_SIZE as u16).unwrap();
+        let int_type = I64; // TODO
+
+        let mut slot_get_sig = Signature::new(module.isa().default_call_conv());
+        slot_get_sig.params.push(AbiParam::new(ptr_type));
+        slot_get_sig.params.push(AbiParam::new(int_type));
+
+        let slot_get_fn = module
+            .declare_function(
+                "slot_getsomeattrs_int",
+                cranelift_module::Linkage::Local,
+                &slot_get_sig,
+            )
+            .unwrap();
 
         let mut make_ro_sig = Signature::new(module.isa().default_call_conv());
         make_ro_sig.returns.push(AbiParam::new(datum_type));
@@ -79,6 +94,7 @@ impl JitContext {
             builder_ctx: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             module,
+            slot_get_fn,
             make_ro_fn,
         }
     }
@@ -89,6 +105,7 @@ impl JitContext {
         let datum_type = Type::int_with_byte_size(DATUM_SIZE as u16).unwrap();
         let bool_type = Type::int_with_byte_size(BOOL_SIZE as u16).unwrap();
         let ptr_type = Type::int_with_byte_size(PTR_SIZE as u16).unwrap();
+        let int_type = I64; // TODO
 
         self.ctx
             .func
@@ -106,6 +123,10 @@ impl JitContext {
         v0sig.params.push(AbiParam::new(ptr_type));
         let v0sig = builder.import_signature(v0sig);
 
+        let slot_get_fn = self
+            .module
+            .declare_func_in_func(self.slot_get_fn, builder.func);
+
         let make_ro_fn = self
             .module
             .declare_func_in_func(self.make_ro_fn, builder.func);
@@ -119,7 +140,7 @@ impl JitContext {
         builder.switch_to_block(init_block);
 
         let param_state = builder.block_params(init_block)[0];
-        let _param_econtext = builder.block_params(init_block)[1];
+        let param_econtext = builder.block_params(init_block)[1];
         let param_isnull = builder.block_params(init_block)[2];
 
         let bool_false = builder.ins().iconst(bool_type, 0);
@@ -142,6 +163,22 @@ impl JitContext {
             offset_of!(pg_sys::ExprState, resultslot) as i32,
         );
 
+        let scanslot_off = builder.ins().iconst(
+            ptr_type,
+            offset_of!(pg_sys::ExprContext, ecxt_scantuple) as i64,
+        );
+        let innerslot_off = builder.ins().iconst(
+            ptr_type,
+            offset_of!(pg_sys::ExprContext, ecxt_innertuple) as i64,
+        );
+        let outerslot_off = builder.ins().iconst(
+            ptr_type,
+            offset_of!(pg_sys::ExprContext, ecxt_outertuple) as i64,
+        );
+        let p_scanslot = builder.ins().iadd(param_econtext, scanslot_off);
+        let p_innerslot = builder.ins().iadd(param_econtext, innerslot_off);
+        let p_outerslot = builder.ins().iadd(param_econtext, outerslot_off);
+
         builder.ins().jump(blocks[0], &[]);
 
         builder.seal_block(init_block);
@@ -149,8 +186,8 @@ impl JitContext {
         let mut all = true;
 
         for i in 0..(state.steps_len as usize) {
-            let step = state.steps.add(i);
-            let opcode = (*step).opcode as u32;
+            let op = state.steps.add(i);
+            let opcode = (*op).opcode as u32;
 
             builder.switch_to_block(blocks[i]);
 
@@ -163,32 +200,144 @@ impl JitContext {
 
                     builder.ins().return_(&[tmpvalue]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_INNER_FETCHSOME => (),
-                //pg_sys::ExprEvalOp_EEOP_OUTER_FETCHSOME => (),
-                //pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => (),
-                //pg_sys::ExprEvalOp_EEOP_INNER_VAR => (),
-                //pg_sys::ExprEvalOp_EEOP_OUTER_VAR => (),
-                //pg_sys::ExprEvalOp_EEOP_SCAN_VAR => (),
-                //pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR => (),
-                //pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR => (),
-                //pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => (),
+                pg_sys::ExprEvalOp_EEOP_INNER_FETCHSOME
+                | pg_sys::ExprEvalOp_EEOP_OUTER_FETCHSOME
+                | pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => {
+                    let fetch_block = builder.create_block();
+
+                    // TODO: Rename
+                    let p_slot = match opcode {
+                        pg_sys::ExprEvalOp_EEOP_INNER_FETCHSOME => p_innerslot,
+                        pg_sys::ExprEvalOp_EEOP_OUTER_FETCHSOME => p_outerslot,
+                        pg_sys::ExprEvalOp_EEOP_SCAN_FETCHSOME => p_scanslot,
+                        _ => unreachable!(),
+                    };
+
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_slot, 0);
+
+                    let slot_nvalid = builder.ins().uload16(
+                        int_type,
+                        TRUSTED,
+                        p_slot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_nvalid) as i32,
+                    );
+
+                    let last_var = builder
+                        .ins()
+                        .iconst(int_type, (*op).d.fetch.last_var as i64);
+
+                    let all_fetched = builder.ins().icmp(
+                        IntCC::UnsignedGreaterThanOrEqual,
+                        slot_nvalid,
+                        last_var,
+                    );
+
+                    builder
+                        .ins()
+                        .brif(all_fetched, blocks[i + 1], &[], fetch_block, &[]);
+
+                    builder.switch_to_block(fetch_block);
+
+                    // TODO: Add support for JITed deform
+                    builder.ins().call(slot_get_fn, &[p_slot, last_var]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+
+                    builder.seal_block(fetch_block);
+                }
+                pg_sys::ExprEvalOp_EEOP_INNER_VAR
+                | pg_sys::ExprEvalOp_EEOP_OUTER_VAR
+                | pg_sys::ExprEvalOp_EEOP_SCAN_VAR => {
+                    let attnum = (*op).d.var.attnum;
+
+                    // TODO: Rename
+                    let p_slot = match opcode {
+                        pg_sys::ExprEvalOp_EEOP_INNER_VAR => p_innerslot,
+                        pg_sys::ExprEvalOp_EEOP_OUTER_VAR => p_outerslot,
+                        pg_sys::ExprEvalOp_EEOP_SCAN_VAR => p_scanslot,
+                        _ => unreachable!(),
+                    };
+
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_slot, 0);
+
+                    let p_values = builder.ins().load(
+                        ptr_type,
+                        TRUSTED,
+                        p_slot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_values) as i32,
+                    );
+                    let p_isnull = builder.ins().load(
+                        ptr_type,
+                        TRUSTED,
+                        p_slot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32,
+                    );
+
+                    let value =
+                        builder
+                            .ins()
+                            .load(datum_type, TRUSTED, p_values, attnum * DATUM_SIZE);
+                    let isnull =
+                        builder
+                            .ins()
+                            .load(bool_type, TRUSTED, p_isnull, attnum * BOOL_SIZE);
+
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    builder.ins().store(TRUSTED, value, p_resvalue, 0);
+
+                    builder.ins().store(TRUSTED, isnull, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                //pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR | pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR | pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => (),
                 //pg_sys::ExprEvalOp_EEOP_WHOLEROW => (),
-                //pg_sys::ExprEvalOp_EEOP_ASSIGN_INNER_VAR => (),
-                //pg_sys::ExprEvalOp_EEOP_ASSIGN_OUTER_VAR => (),
-                //pg_sys::ExprEvalOp_EEOP_ASSIGN_SCAN_VAR => (),
-                pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP | pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO => {
-                    let resultnum = (*step).d.assign_tmp.resultnum;
+                pg_sys::ExprEvalOp_EEOP_ASSIGN_INNER_VAR
+                | pg_sys::ExprEvalOp_EEOP_ASSIGN_OUTER_VAR
+                | pg_sys::ExprEvalOp_EEOP_ASSIGN_SCAN_VAR => {
+                    let attnum = (*op).d.assign_var.attnum;
+                    let resultnum = (*op).d.assign_var.resultnum;
 
-                    let tmpvalue = builder.ins().load(datum_type, TRUSTED, p_tmpvalue, 0);
-                    let tmpnull = builder.ins().load(bool_type, TRUSTED, p_tmpnull, 0);
+                    // TODO: Rename
+                    let p_slot = match opcode {
+                        pg_sys::ExprEvalOp_EEOP_ASSIGN_INNER_VAR => p_innerslot,
+                        pg_sys::ExprEvalOp_EEOP_ASSIGN_OUTER_VAR => p_outerslot,
+                        pg_sys::ExprEvalOp_EEOP_ASSIGN_SCAN_VAR => p_scanslot,
+                        _ => unreachable!(),
+                    };
 
-                    let p_tts_values = builder.ins().load(
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_slot, 0);
+
+                    let p_values = builder.ins().load(
+                        ptr_type,
+                        TRUSTED,
+                        p_slot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_values) as i32,
+                    );
+                    let p_isnull = builder.ins().load(
+                        ptr_type,
+                        TRUSTED,
+                        p_slot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32,
+                    );
+
+                    let value =
+                        builder
+                            .ins()
+                            .load(datum_type, TRUSTED, p_values, attnum * DATUM_SIZE);
+                    let isnull =
+                        builder
+                            .ins()
+                            .load(bool_type, TRUSTED, p_isnull, attnum * BOOL_SIZE);
+
+                    let p_result_values = builder.ins().load(
                         ptr_type,
                         TRUSTED,
                         p_resultslot,
                         offset_of!(pg_sys::TupleTableSlot, tts_values) as i32,
                     );
-                    let p_tts_isnull = builder.ins().load(
+                    let p_result_isnull = builder.ins().load(
                         ptr_type,
                         TRUSTED,
                         p_resultslot,
@@ -197,7 +346,36 @@ impl JitContext {
 
                     builder
                         .ins()
-                        .store(TRUSTED, tmpnull, p_tts_isnull, resultnum);
+                        .store(TRUSTED, value, p_result_values, resultnum * DATUM_SIZE);
+
+                    builder
+                        .ins()
+                        .store(TRUSTED, isnull, p_result_isnull, resultnum * BOOL_SIZE);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP | pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO => {
+                    let resultnum = (*op).d.assign_tmp.resultnum;
+
+                    let tmpvalue = builder.ins().load(datum_type, TRUSTED, p_tmpvalue, 0);
+                    let tmpnull = builder.ins().load(bool_type, TRUSTED, p_tmpnull, 0);
+
+                    let p_result_values = builder.ins().load(
+                        ptr_type,
+                        TRUSTED,
+                        p_resultslot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_values) as i32,
+                    );
+                    let p_result_isnull = builder.ins().load(
+                        ptr_type,
+                        TRUSTED,
+                        p_resultslot,
+                        offset_of!(pg_sys::TupleTableSlot, tts_isnull) as i32,
+                    );
+
+                    builder
+                        .ins()
+                        .store(TRUSTED, tmpnull, p_result_isnull, resultnum * BOOL_SIZE);
 
                     if opcode == pg_sys::ExprEvalOp_EEOP_ASSIGN_TMP_MAKE_RO {
                         let call_block = builder.create_block();
@@ -215,7 +393,7 @@ impl JitContext {
                         builder.ins().store(
                             TRUSTED,
                             retvalue,
-                            p_tts_values,
+                            p_result_values,
                             resultnum * DATUM_SIZE,
                         );
 
@@ -226,7 +404,7 @@ impl JitContext {
                         builder.ins().store(
                             TRUSTED,
                             tmpvalue,
-                            p_tts_values,
+                            p_result_values,
                             resultnum * DATUM_SIZE,
                         );
 
@@ -236,13 +414,13 @@ impl JitContext {
                 pg_sys::ExprEvalOp_EEOP_CONST => {
                     let value = builder
                         .ins()
-                        .iconst(datum_type, (*step).d.constval.value.value() as i64);
+                        .iconst(datum_type, (*op).d.constval.value.value() as i64);
                     let isnull = builder
                         .ins()
-                        .iconst(bool_type, (*step).d.constval.isnull as i64);
+                        .iconst(bool_type, (*op).d.constval.isnull as i64);
 
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     builder.ins().store(TRUSTED, value, p_resvalue, 0);
                     builder.ins().store(TRUSTED, isnull, p_resnull, 0);
@@ -250,15 +428,15 @@ impl JitContext {
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
                 pg_sys::ExprEvalOp_EEOP_FUNCEXPR => {
-                    let fcinfo = (*step).d.func.fcinfo_data;
+                    let fcinfo = (*op).d.func.fcinfo_data;
 
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     let p_fcinfo = builder.ins().iconst(ptr_type, fcinfo as i64);
                     let fn_addr = builder
                         .ins()
-                        .iconst(ptr_type, transmute::<_, i64>((*step).d.func.fn_addr));
+                        .iconst(ptr_type, transmute::<_, i64>((*op).d.func.fn_addr));
 
                     builder.ins().store(
                         TRUSTED,
@@ -283,13 +461,13 @@ impl JitContext {
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
                 pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT => {
-                    let fcinfo = (*step).d.func.fcinfo_data;
-                    let nargs = (*step).d.func.nargs as usize;
+                    let fcinfo = (*op).d.func.fcinfo_data;
+                    let nargs = (*op).d.func.nargs as usize;
 
                     debug_assert!(nargs != 0, "argumentless strict functions are pointless");
 
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     builder.ins().store(TRUSTED, bool_true, p_resnull, 0);
 
@@ -329,7 +507,7 @@ impl JitContext {
                     let p_fcinfo = builder.ins().iconst(ptr_type, fcinfo as i64);
                     let fn_addr = builder
                         .ins()
-                        .iconst(ptr_type, transmute::<_, i64>((*step).d.func.fn_addr));
+                        .iconst(ptr_type, transmute::<_, i64>((*op).d.func.fn_addr));
 
                     builder.ins().store(
                         TRUSTED,
@@ -364,7 +542,7 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_BOOL_OR_STEP => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_OR_STEP_LAST => (),
                 pg_sys::ExprEvalOp_EEOP_BOOL_NOT_STEP => {
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
 
                     let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
 
@@ -374,12 +552,12 @@ impl JitContext {
                     builder.ins().store(TRUSTED, negvalue, p_resvalue, 0);
 
                     builder.ins().jump(blocks[i + 1], &[]);
-                },
+                }
                 pg_sys::ExprEvalOp_EEOP_QUAL => {
-                    let jumpdone = (*step).d.qualexpr.jumpdone as usize;
+                    let jumpdone = (*op).d.qualexpr.jumpdone as usize;
 
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     let resvalue = builder.ins().load(datum_type, TRUSTED, p_resvalue, 0);
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
@@ -404,7 +582,7 @@ impl JitContext {
                     builder.seal_block(then_block);
                 }
                 pg_sys::ExprEvalOp_EEOP_JUMP => {
-                    let jumpdone = (*step).d.jump.jumpdone as usize;
+                    let jumpdone = (*op).d.jump.jumpdone as usize;
 
                     builder.ins().jump(blocks[jumpdone], &[]);
                 }
@@ -412,8 +590,8 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_NULL => (),
                 //pg_sys::ExprEvalOp_EEOP_JUMP_IF_NOT_TRUE => (),
                 pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNULL => {
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
                     let isnull = builder.ins().select(resnull, datum_true, datum_false);
@@ -424,8 +602,8 @@ impl JitContext {
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
                 pg_sys::ExprEvalOp_EEOP_NULLTEST_ISNOTNULL => {
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
                     let isnotnull = builder.ins().select(resnull, datum_false, datum_true);
@@ -438,8 +616,8 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNOTNULL => (),
                 pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_TRUE => {
-                    let p_resvalue = builder.ins().iconst(ptr_type, (*step).resvalue as i64);
-                    let p_resnull = builder.ins().iconst(ptr_type, (*step).resnull as i64);
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
 
                     let resnull = builder.ins().load(bool_type, TRUSTED, p_resnull, 0);
 
@@ -627,7 +805,7 @@ pub unsafe extern "C" fn _PG_jit_provider_init(cb: *mut sys::JitProviderCallback
 }
 
 #[cfg(any(test, feature = "pg_test"))]
-#[pg_schema]
+#[pgrx::pg_schema]
 mod tests {
     use pgrx::prelude::*;
 
