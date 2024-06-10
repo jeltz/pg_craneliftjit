@@ -11,7 +11,7 @@ use pgrx::{pg_guard, pg_sys};
 use std::mem::{offset_of, size_of, transmute};
 use std::os::raw::c_int;
 use std::ptr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod sys;
 
@@ -86,10 +86,10 @@ impl JitContext {
                 resowner: unsafe { pg_sys::CurrentResourceOwner },
                 instr: sys::JitInstrumentation {
                     created_functions: 0,
-                    generation_counter: pg_sys::instr_time { ticks: 0 },
-                    inlining_counter: pg_sys::instr_time { ticks: 0 },
-                    optimization_counter: pg_sys::instr_time { ticks: 0 },
-                    emission_counter: pg_sys::instr_time { ticks: 0 },
+                    generation_counter: instr_time_new(),
+                    inlining_counter: instr_time_new(),
+                    optimization_counter: instr_time_new(),
+                    emission_counter: instr_time_new(),
                 },
             },
             builder_ctx: FunctionBuilderContext::new(),
@@ -1145,7 +1145,7 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                #[cfg(any(feature = "pg16"))]
+                #[cfg(feature = "pg16")]
                 pg_sys::ExprEvalOp_EEOP_JSON_CONSTRUCTOR => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
@@ -1160,7 +1160,7 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                #[cfg(any(feature = "pg16"))]
+                #[cfg(feature = "pg16")]
                 pg_sys::ExprEvalOp_EEOP_IS_JSON => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
@@ -1257,7 +1257,7 @@ impl JitContext {
         builder.finalize();
 
         if all {
-            self.base.instr.generation_counter.ticks += (Instant::now() - start).as_nanos() as i64;
+            instr_time_add(&mut self.base.instr.generation_counter, Instant::now() - start);
             self.base.instr.created_functions += 1;
 
             pgrx::notice!("{}", self.ctx.func.display());
@@ -1286,15 +1286,38 @@ impl JitContext {
             );
             state.evalfunc_private = jit_ctx as *mut core::ffi::c_void;
 
-            self.base.instr.emission_counter.ticks += (Instant::now() - start).as_nanos() as i64;
-
-            pgrx::notice!("{}", self.ctx.func.display());
+            instr_time_add(&mut self.base.instr.emission_counter, Instant::now() - start);
         }
 
         self.module.clear_context(&mut self.ctx);
 
         all
     }
+}
+
+#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+fn instr_time_new() -> pg_sys::instr_time {
+    pg_sys::instr_time { tv_sec: 0, tv_nsec: 0 }
+}
+
+#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+fn instr_time_add(time: &mut pg_sys::instr_time, duration: Duration) {
+    time.tv_nsec += duration.as_nanos() as i64;
+    while time.tv_nsec >= 1_000_000_000 {
+        time.tv_nsec -= 1_000_000_000;
+        time.tv_sec +=1;
+    }
+}
+
+#[cfg(feature = "pg16")]
+fn instr_time_new() -> pg_sys::instr_time {
+    pg_sys::instr_time { ticks: 0 }
+}
+
+#[cfg(feature = "pg16")]
+#[inline]
+fn instr_time_add(time: &mut pg_sys::instr_time, duration: Duration) {
+    time.ticks += duration.as_nanos() as i64;
 }
 
 // TODO: This wrapper is only here to make things easier to debug.
