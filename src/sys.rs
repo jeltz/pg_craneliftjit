@@ -27,4 +27,6 @@ pub struct JitProviderCallbacks {
 extern "C" {
     pub fn ResourceOwnerEnlargeJIT(owner: *mut pg_sys::ResourceOwnerData);
     pub fn ResourceOwnerRememberJIT(owner: *mut pg_sys::ResourceOwnerData, handle: pg_sys::Datum);
+
+    pub static mut jit_dump_bitcode: bool;
 }

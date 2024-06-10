@@ -1257,10 +1257,17 @@ impl JitContext {
         builder.finalize();
 
         if all {
-            instr_time_add(&mut self.base.instr.generation_counter, Instant::now() - start);
+            instr_time_add(
+                &mut self.base.instr.generation_counter,
+                Instant::now() - start,
+            );
             self.base.instr.created_functions += 1;
 
-            pgrx::notice!("{}", self.ctx.func.display());
+            // TODO: Wirte to file?
+            // TODO: Dump after optimization
+            if sys::jit_dump_bitcode {
+                pgrx::notice!("{}", self.ctx.func.display());
+            }
 
             let start = Instant::now();
 
@@ -1286,7 +1293,10 @@ impl JitContext {
             );
             state.evalfunc_private = jit_ctx as *mut core::ffi::c_void;
 
-            instr_time_add(&mut self.base.instr.emission_counter, Instant::now() - start);
+            instr_time_add(
+                &mut self.base.instr.emission_counter,
+                Instant::now() - start,
+            );
         }
 
         self.module.clear_context(&mut self.ctx);
@@ -1297,7 +1307,10 @@ impl JitContext {
 
 #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
 fn instr_time_new() -> pg_sys::instr_time {
-    pg_sys::instr_time { tv_sec: 0, tv_nsec: 0 }
+    pg_sys::instr_time {
+        tv_sec: 0,
+        tv_nsec: 0,
+    }
 }
 
 #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
@@ -1305,7 +1318,7 @@ fn instr_time_add(time: &mut pg_sys::instr_time, duration: Duration) {
     time.tv_nsec += duration.as_nanos() as i64;
     while time.tv_nsec >= 1_000_000_000 {
         time.tv_nsec -= 1_000_000_000;
-        time.tv_sec +=1;
+        time.tv_sec += 1;
     }
 }
 
@@ -1330,9 +1343,9 @@ unsafe extern "C" fn wrapper(
         .func
         .unwrap();
 
-    pgrx::notice!("calling compiled expression {:#x}", func as usize);
+    //pgrx::notice!("calling compiled expression {:#x}", func as usize);
     let ret = func(state, econtext, isnull);
-    pgrx::notice!("ret {:#x}", ret.value() as u64);
+    //pgrx::notice!("ret {:#x}", ret.value() as u64);
     ret
 }
 
