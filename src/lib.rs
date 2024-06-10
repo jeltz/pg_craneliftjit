@@ -124,6 +124,17 @@ impl JitContext {
         v0sig.params.push(AbiParam::new(ptr_type));
         let v0sig = builder.import_signature(v0sig);
 
+        let mut exec_eval2_sig = Signature::new(self.module.isa().default_call_conv());
+        exec_eval2_sig.params.push(AbiParam::new(ptr_type));
+        exec_eval2_sig.params.push(AbiParam::new(ptr_type));
+        let exec_eval2_sig = builder.import_signature(exec_eval2_sig);
+
+        let mut exec_eval3_sig = Signature::new(self.module.isa().default_call_conv());
+        exec_eval3_sig.params.push(AbiParam::new(ptr_type));
+        exec_eval3_sig.params.push(AbiParam::new(ptr_type));
+        exec_eval3_sig.params.push(AbiParam::new(ptr_type));
+        let exec_eval3_sig = builder.import_signature(exec_eval3_sig);
+
         let slot_get_fn = self
             .module
             .declare_func_in_func(self.slot_get_fn, builder.func);
@@ -290,7 +301,14 @@ impl JitContext {
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
                 //pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR | pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR | pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => (),
-                //pg_sys::ExprEvalOp_EEOP_WHOLEROW => (),
+                pg_sys::ExprEvalOp_EEOP_WHOLEROW => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalWholeRowVar as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                },
                 pg_sys::ExprEvalOp_EEOP_ASSIGN_INNER_VAR
                 | pg_sys::ExprEvalOp_EEOP_ASSIGN_OUTER_VAR
                 | pg_sys::ExprEvalOp_EEOP_ASSIGN_SCAN_VAR => {
@@ -528,8 +546,22 @@ impl JitContext {
 
                     builder.seal_block(arg_blocks[nargs]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_FUSAGE => (),
-                //pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT_FUSAGE => (),
+                pg_sys::ExprEvalOp_EEOP_FUNCEXPR_FUSAGE => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalFuncExprFusage as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_FUNCEXPR_STRICT_FUSAGE => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalFuncExprStrictFusage as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_BOOL_AND_STEP_FIRST => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_AND_STEP => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOL_AND_STEP_LAST => (),
@@ -641,8 +673,22 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNULL => (),
-                //pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNOTNULL => (),
+                pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNULL => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalRowNull as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_NULLTEST_ROWISNOTNULL => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalRowNotNull as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_TRUE => {
                     let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
                     let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
@@ -667,8 +713,22 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_NOT_TRUE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_FALSE => (),
                 //pg_sys::ExprEvalOp_EEOP_BOOLTEST_IS_NOT_FALSE => (),
-                //pg_sys::ExprEvalOp_EEOP_PARAM_EXEC => (),
-                //pg_sys::ExprEvalOp_EEOP_PARAM_EXTERN => (),
+                pg_sys::ExprEvalOp_EEOP_PARAM_EXEC => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalParamExec as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_PARAM_EXTERN => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalParamExtern as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_PARAM_CALLBACK => (),
                 pg_sys::ExprEvalOp_EEOP_CASE_TESTVAL => {
                     let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
@@ -744,18 +804,88 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_DISTINCT => (),
                 //pg_sys::ExprEvalOp_EEOP_NOT_DISTINCT => (),
                 //pg_sys::ExprEvalOp_EEOP_NULLIF => (),
-                //pg_sys::ExprEvalOp_EEOP_SQLVALUEFUNCTION => (),
-                //pg_sys::ExprEvalOp_EEOP_CURRENTOFEXPR => (),
-                //pg_sys::ExprEvalOp_EEOP_NEXTVALUEEXPR => (),
-                //pg_sys::ExprEvalOp_EEOP_ARRAYEXPR => (),
-                //pg_sys::ExprEvalOp_EEOP_ARRAYCOERCE => (),
-                //pg_sys::ExprEvalOp_EEOP_ROW => (),
+                pg_sys::ExprEvalOp_EEOP_SQLVALUEFUNCTION => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalSQLValueFunction as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_CURRENTOFEXPR => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalCurrentOfExpr as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_NEXTVALUEEXPR => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalNextValueExpr as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_ARRAYEXPR => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalArrayExpr as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_ARRAYCOERCE => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalArrayCoerce as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_ROW => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalRow as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_ROWCOMPARE_STEP => (),
                 //pg_sys::ExprEvalOp_EEOP_ROWCOMPARE_FINAL => (),
-                //pg_sys::ExprEvalOp_EEOP_MINMAX => (),
-                //pg_sys::ExprEvalOp_EEOP_FIELDSELECT => (),
-                //pg_sys::ExprEvalOp_EEOP_FIELDSTORE_DEFORM => (),
-                //pg_sys::ExprEvalOp_EEOP_FIELDSTORE_FORM => (),
+                pg_sys::ExprEvalOp_EEOP_MINMAX => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalMinMax as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_FIELDSELECT => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalFieldSelect as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_FIELDSTORE_DEFORM => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalFieldStoreDeForm as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_FIELDSTORE_FORM => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalFieldStoreForm as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_SBSREF_SUBSCRIPTS => (),
                 //pg_sys::ExprEvalOp_EEOP_SBSREF_OLD => (),
                 //pg_sys::ExprEvalOp_EEOP_SBSREF_ASSIGN => (),
@@ -796,18 +926,88 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 },
-                //pg_sys::ExprEvalOp_EEOP_DOMAIN_NOTNULL => (),
-                //pg_sys::ExprEvalOp_EEOP_DOMAIN_CHECK => (),
-                //pg_sys::ExprEvalOp_EEOP_CONVERT_ROWTYPE => (),
-                //pg_sys::ExprEvalOp_EEOP_SCALARARRAYOP => (),
-                //pg_sys::ExprEvalOp_EEOP_HASHED_SCALARARRAYOP => (),
-                //pg_sys::ExprEvalOp_EEOP_XMLEXPR => (),
-                //pg_sys::ExprEvalOp_EEOP_JSON_CONSTRUCTOR => (),
-                //pg_sys::ExprEvalOp_EEOP_IS_JSON => (),
+                pg_sys::ExprEvalOp_EEOP_DOMAIN_NOTNULL => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalConstraintNotNull as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_DOMAIN_CHECK => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalConstraintCheck as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_CONVERT_ROWTYPE => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalConvertRowtype as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_SCALARARRAYOP => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalScalarArrayOp as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_HASHED_SCALARARRAYOP => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalHashedScalarArrayOp as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_XMLEXPR => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalXmlExpr as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_JSON_CONSTRUCTOR => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalJsonConstructor as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_IS_JSON => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalGroupingFunc as i64);
+
+                    builder.ins().call_indirect(exec_eval2_sig, fn_addr, &[param_state, p_op]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_AGGREF => (),
-                //pg_sys::ExprEvalOp_EEOP_GROUPING_FUNC => (),
+                pg_sys::ExprEvalOp_EEOP_GROUPING_FUNC => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalJsonConstructor as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_WINDOW_FUNC => (),
-                //pg_sys::ExprEvalOp_EEOP_SUBPLAN => (),
+                pg_sys::ExprEvalOp_EEOP_SUBPLAN => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalSubPlan as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 //pg_sys::ExprEvalOp_EEOP_AGG_STRICT_DESERIALIZE => (),
                 //pg_sys::ExprEvalOp_EEOP_AGG_DESERIALIZE => (),
                 //pg_sys::ExprEvalOp_EEOP_AGG_STRICT_INPUT_CHECK_ARGS => (),
@@ -821,8 +1021,22 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_AGG_PLAIN_TRANS_BYREF => (),
                 //pg_sys::ExprEvalOp_EEOP_AGG_PRESORTED_DISTINCT_SINGLE => (),
                 //pg_sys::ExprEvalOp_EEOP_AGG_PRESORTED_DISTINCT_MULTI => (),
-                //pg_sys::ExprEvalOp_EEOP_AGG_ORDERED_TRANS_DATUM => (),
-                //pg_sys::ExprEvalOp_EEOP_AGG_ORDERED_TRANS_TUPLE => (),
+                pg_sys::ExprEvalOp_EEOP_AGG_ORDERED_TRANS_DATUM => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalAggOrderedTransDatum as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
+                pg_sys::ExprEvalOp_EEOP_AGG_ORDERED_TRANS_TUPLE => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalAggOrderedTransTuple as i64);
+
+                    builder.ins().call_indirect(exec_eval3_sig, fn_addr, &[param_state, p_op, param_econtext]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 pg_sys::ExprEvalOp_EEOP_LAST => debug_assert!(false, "unexpected EEOP_LAST"),
                 opcode => {
                     all = false;
