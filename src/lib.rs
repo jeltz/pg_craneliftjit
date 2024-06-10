@@ -198,6 +198,17 @@ impl JitContext {
         let p_innerslot = builder.ins().iadd(param_econtext, innerslot_off);
         let p_outerslot = builder.ins().iadd(param_econtext, outerslot_off);
 
+        let aggvalues_off = builder.ins().iconst(
+            ptr_type,
+            offset_of!(pg_sys::ExprContext, ecxt_aggvalues) as i64,
+        );
+        let aggnulls_off = builder.ins().iconst(
+            ptr_type,
+            offset_of!(pg_sys::ExprContext, ecxt_aggnulls) as i64,
+        );
+        let p_aggvalues = builder.ins().iadd(param_econtext, aggvalues_off);
+        let p_aggnulls = builder.ins().iadd(param_econtext, aggnulls_off);
+
         builder.ins().jump(blocks[0], &[]);
 
         builder.seal_block(init_block);
@@ -1173,7 +1184,26 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_AGGREF => (),
+                pg_sys::ExprEvalOp_EEOP_AGGREF => {
+                    let aggno = (*op).d.aggref.aggno;
+
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let value =
+                        builder
+                            .ins()
+                            .load(datum_type, TRUSTED, p_aggvalues, aggno * DATUM_SIZE);
+                    let isnull =
+                        builder
+                            .ins()
+                            .load(bool_type, TRUSTED, p_aggnulls, aggno * BOOL_SIZE);
+
+                    builder.ins().store(TRUSTED, value, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, isnull, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 pg_sys::ExprEvalOp_EEOP_GROUPING_FUNC => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
