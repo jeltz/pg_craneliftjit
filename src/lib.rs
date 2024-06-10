@@ -1118,6 +1118,7 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
+                #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16"))]
                 pg_sys::ExprEvalOp_EEOP_HASHED_SCALARARRAYOP => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
@@ -1144,6 +1145,7 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
+                #[cfg(any(feature = "pg16"))]
                 pg_sys::ExprEvalOp_EEOP_JSON_CONSTRUCTOR => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
@@ -1158,6 +1160,7 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
+                #[cfg(any(feature = "pg16"))]
                 pg_sys::ExprEvalOp_EEOP_IS_JSON => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
@@ -1175,7 +1178,7 @@ impl JitContext {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder
                         .ins()
-                        .iconst(ptr_type, pg_sys::ExecEvalJsonConstructor as i64);
+                        .iconst(ptr_type, pg_sys::ExecEvalGroupingFunc as i64);
 
                     builder.ins().call_indirect(
                         exec_eval3_sig,
