@@ -135,6 +135,13 @@ impl JitContext {
         exec_eval3_sig.params.push(AbiParam::new(ptr_type));
         let exec_eval3_sig = builder.import_signature(exec_eval3_sig);
 
+        let mut exec_eval4_sig = Signature::new(self.module.isa().default_call_conv());
+        exec_eval4_sig.params.push(AbiParam::new(ptr_type));
+        exec_eval4_sig.params.push(AbiParam::new(ptr_type));
+        exec_eval4_sig.params.push(AbiParam::new(ptr_type));
+        exec_eval4_sig.params.push(AbiParam::new(ptr_type));
+        let exec_eval4_sig = builder.import_signature(exec_eval4_sig);
+
         let slot_get_fn = self
             .module
             .declare_func_in_func(self.slot_get_fn, builder.func);
@@ -300,7 +307,23 @@ impl JitContext {
 
                     builder.ins().jump(blocks[i + 1], &[]);
                 }
-                //pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR | pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR | pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => (),
+                pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR | pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR | pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => {
+                    let p_op = builder.ins().iconst(ptr_type, op as i64);
+                    let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalSysVar as i64);
+
+                    let p_p_slot = match opcode {
+                        pg_sys::ExprEvalOp_EEOP_INNER_SYSVAR => p_innerslot,
+                        pg_sys::ExprEvalOp_EEOP_OUTER_SYSVAR => p_outerslot,
+                        pg_sys::ExprEvalOp_EEOP_SCAN_SYSVAR => p_scanslot,
+                        _ => unreachable!(),
+                    };
+
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_p_slot, 0);
+
+                    builder.ins().call_indirect(exec_eval4_sig, fn_addr, &[param_state, p_op, param_econtext, p_slot]);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                }
                 pg_sys::ExprEvalOp_EEOP_WHOLEROW => {
                     let p_op = builder.ins().iconst(ptr_type, op as i64);
                     let fn_addr = builder.ins().iconst(ptr_type, pg_sys::ExecEvalWholeRowVar as i64);
@@ -315,15 +338,14 @@ impl JitContext {
                     let attnum = (*op).d.assign_var.attnum;
                     let resultnum = (*op).d.assign_var.resultnum;
 
-                    // TODO: Rename
-                    let p_slot = match opcode {
+                    let p_p_slot = match opcode {
                         pg_sys::ExprEvalOp_EEOP_ASSIGN_INNER_VAR => p_innerslot,
                         pg_sys::ExprEvalOp_EEOP_ASSIGN_OUTER_VAR => p_outerslot,
                         pg_sys::ExprEvalOp_EEOP_ASSIGN_SCAN_VAR => p_scanslot,
                         _ => unreachable!(),
                     };
 
-                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_slot, 0);
+                    let p_slot = builder.ins().load(ptr_type, TRUSTED, p_p_slot, 0);
 
                     let p_values = builder.ins().load(
                         ptr_type,
