@@ -760,7 +760,42 @@ impl JitContext {
                 //pg_sys::ExprEvalOp_EEOP_SBSREF_OLD => (),
                 //pg_sys::ExprEvalOp_EEOP_SBSREF_ASSIGN => (),
                 //pg_sys::ExprEvalOp_EEOP_SBSREF_FETCH => (),
-                //pg_sys::ExprEvalOp_EEOP_DOMAIN_TESTVAL => (),
+                pg_sys::ExprEvalOp_EEOP_DOMAIN_TESTVAL => {
+                    let p_resvalue = builder.ins().iconst(ptr_type, (*op).resvalue as i64);
+                    let p_resnull = builder.ins().iconst(ptr_type, (*op).resnull as i64);
+
+                    let (p_casevalue, p_casenull);
+
+                    if !(*op).d.casetest.value.is_null() {
+                        p_casevalue = builder
+                            .ins()
+                            .iconst(ptr_type, (*op).d.casetest.value as i64);
+                        p_casenull = builder
+                            .ins()
+                            .iconst(ptr_type, (*op).d.casetest.isnull as i64);
+                    } else {
+                        p_casevalue = builder.ins().load(
+                            ptr_type,
+                            TRUSTED,
+                            param_econtext,
+                            offset_of!(pg_sys::ExprContext, domainValue_datum) as i32,
+                        );
+                        p_casenull = builder.ins().load(
+                            ptr_type,
+                            TRUSTED,
+                            param_econtext,
+                            offset_of!(pg_sys::ExprContext, domainValue_isNull) as i32,
+                        );
+                    }
+
+                    let casevalue = builder.ins().load(datum_type, TRUSTED, p_casevalue, 0);
+                    let casenull = builder.ins().load(bool_type, TRUSTED, p_casenull, 0);
+
+                    builder.ins().store(TRUSTED, casevalue, p_resvalue, 0);
+                    builder.ins().store(TRUSTED, casenull, p_resnull, 0);
+
+                    builder.ins().jump(blocks[i + 1], &[]);
+                },
                 //pg_sys::ExprEvalOp_EEOP_DOMAIN_NOTNULL => (),
                 //pg_sys::ExprEvalOp_EEOP_DOMAIN_CHECK => (),
                 //pg_sys::ExprEvalOp_EEOP_CONVERT_ROWTYPE => (),
